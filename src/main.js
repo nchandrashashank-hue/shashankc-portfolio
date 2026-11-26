@@ -13,8 +13,13 @@ scene.fog = new THREE.FogExp2(0x070b16, 0.045);
 const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
 camera.position.set(0, 0, 9);
 
-const cyan = new THREE.Color(0x38e1ff);
-const violet = new THREE.Color(0x8b5cf6);
+const PALETTES = {
+  dark:  { a: 0x38e1ff, b: 0x8b5cf6, fog: 0x070b16, star: 0x9fb6ff, pulse: 0xffffff, blend: THREE.AdditiveBlending, lineOp: 0.28, coreOp: 0.35, starOp: 0.7 },
+  light: { a: 0x1a5cff, b: 0x6d3ef0, fog: 0xf5f7fb, star: 0x7d8fb8, pulse: 0x1a5cff, blend: THREE.NormalBlending, lineOp: 0.22, coreOp: 0.3, starOp: 0.45 },
+};
+const currentTheme = () => (document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark');
+const cyan = new THREE.Color(PALETTES.dark.a);
+const violet = new THREE.Color(PALETTES.dark.b);
 
 // Network sphere: nodes on a sphere, connected to near neighbours
 const brain = new THREE.Group();
@@ -49,12 +54,14 @@ const dotTex = (() => {
   g.fillRect(0, 0, 64, 64);
   return new THREE.CanvasTexture(c);
 })();
-brain.add(new THREE.Points(nodeGeo, new THREE.PointsMaterial({
+const nodeMat = new THREE.PointsMaterial({
   size: 0.16, map: dotTex, vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
-})));
+});
+brain.add(new THREE.Points(nodeGeo, nodeMat));
 
 const linePos = [];
 const lineCol = [];
+const lineIdx = [];
 const MAX_D = 1.15;
 for (let i = 0; i < nodes.length; i++) {
   for (let j = i + 1; j < nodes.length; j++) {
@@ -63,15 +70,17 @@ for (let i = 0; i < nodes.length; i++) {
       const ci = nodeColors.slice(i * 3, i * 3 + 3);
       const cj = nodeColors.slice(j * 3, j * 3 + 3);
       lineCol.push(...ci, ...cj);
+      lineIdx.push([i, j]);
     }
   }
 }
 const lineGeo = new THREE.BufferGeometry();
 lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(linePos, 3));
 lineGeo.setAttribute('color', new THREE.Float32BufferAttribute(lineCol, 3));
-brain.add(new THREE.LineSegments(lineGeo, new THREE.LineBasicMaterial({
+const lineMat = new THREE.LineBasicMaterial({
   vertexColors: true, transparent: true, opacity: 0.28, blending: THREE.AdditiveBlending, depthWrite: false,
-})));
+});
+brain.add(new THREE.LineSegments(lineGeo, lineMat));
 
 // Inner glowing wireframe core
 const core = new THREE.Mesh(
@@ -87,9 +96,10 @@ const pulseGeo = new THREE.BufferGeometry();
 const pulseArr = new Float32Array(PULSES * 3);
 pulseGeo.setAttribute('position', new THREE.BufferAttribute(pulseArr, 3));
 const pulses = Array.from({ length: PULSES }, () => ({ e: Math.floor(Math.random() * edgeCount), t: Math.random(), s: 0.004 + Math.random() * 0.01 }));
-brain.add(new THREE.Points(pulseGeo, new THREE.PointsMaterial({
+const pulseMat = new THREE.PointsMaterial({
   size: 0.26, map: dotTex, color: 0xffffff, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
-})));
+});
+brain.add(new THREE.Points(pulseGeo, pulseMat));
 
 // Far particle field
 const STARS = 900;
@@ -101,8 +111,49 @@ for (let i = 0; i < STARS; i++) {
 }
 const starGeo = new THREE.BufferGeometry();
 starGeo.setAttribute('position', new THREE.BufferAttribute(starArr, 3));
-const stars = new THREE.Points(starGeo, new THREE.PointsMaterial({ size: 0.06, color: 0x9fb6ff, transparent: true, opacity: 0.7 }));
+const starMat = new THREE.PointsMaterial({ size: 0.06, color: 0x9fb6ff, transparent: true, opacity: 0.7 });
+const stars = new THREE.Points(starGeo, starMat);
 scene.add(stars);
+
+// Recolour the whole scene for light / dark theme
+function applySceneTheme(name) {
+  const P = PALETTES[name];
+  const ca = new THREE.Color(P.a), cb = new THREE.Color(P.b);
+  const cols = nodeGeo.attributes.color;
+  nodes.forEach((n, i) => {
+    const c = ca.clone().lerp(cb, (n.y / R + 1) / 2);
+    cols.setXYZ(i, c.r, c.g, c.b);
+    nodeColors[i * 3] = c.r; nodeColors[i * 3 + 1] = c.g; nodeColors[i * 3 + 2] = c.b;
+  });
+  cols.needsUpdate = true;
+  const lc = lineGeo.attributes.color;
+  for (let k = 0, v = 0; k < lineIdx.length; k++) {
+    for (const idx of lineIdx[k]) { lc.setXYZ(v++, nodeColors[idx * 3], nodeColors[idx * 3 + 1], nodeColors[idx * 3 + 2]); }
+  }
+  lc.needsUpdate = true;
+  [nodeMat, lineMat, pulseMat].forEach((m) => { m.blending = P.blend; m.needsUpdate = true; });
+  lineMat.opacity = P.lineOp;
+  core.material.color.set(P.b);
+  core.material.opacity = P.coreOp;
+  pulseMat.color.set(P.pulse);
+  starMat.color.set(P.star);
+  starMat.opacity = P.starOp;
+  scene.fog.color.set(P.fog);
+  if (reduceMotion) renderer.render(scene, camera);
+}
+applySceneTheme(currentTheme());
+
+const toggle = document.getElementById('themeToggle');
+const metaTheme = document.querySelector('meta[name="theme-color"]');
+const syncMeta = () => metaTheme.setAttribute('content', currentTheme() === 'light' ? '#f5f7fb' : '#070b16');
+syncMeta();
+toggle.addEventListener('click', () => {
+  const next = currentTheme() === 'light' ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('theme', next);
+  applySceneTheme(next);
+  syncMeta();
+});
 
 // Layout: sphere on the right on desktop, centred behind content on mobile
 function place() {
